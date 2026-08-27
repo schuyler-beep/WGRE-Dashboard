@@ -68,17 +68,17 @@ export const DASHBOARD_HTML = `
 
         <div class="today-grid">
           <div>
-            <p class="subhead">Schedule</p>
-            <ul class="schedule-list" id="scheduleList"></ul>
-            <button class="add-row-btn" id="addScheduleBtn">+ Add time block</button>
-          </div>
-
-          <div>
             <div class="task-panel-head">
               <p class="subhead" style="margin-bottom:0;">Tasks</p>
               <div class="task-tabs" id="taskTabs"></div>
             </div>
             <ul class="task-list" id="taskList"></ul>
+          </div>
+
+          <div>
+            <p class="subhead">Schedule</p>
+            <ul class="schedule-list" id="scheduleList"></ul>
+            <button class="add-row-btn" id="addScheduleBtn">+ Add time block</button>
           </div>
         </div>
       </section>
