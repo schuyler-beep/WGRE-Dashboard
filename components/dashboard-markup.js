@@ -74,7 +74,10 @@ export const DASHBOARD_HTML = `
           </div>
 
           <div>
-            <p class="subhead">Top 3 Tasks</p>
+            <div class="task-panel-head">
+              <p class="subhead" style="margin-bottom:0;">Tasks</p>
+              <div class="task-tabs" id="taskTabs"></div>
+            </div>
             <ul class="task-list" id="taskList"></ul>
           </div>
         </div>
