@@ -7,12 +7,18 @@
 const STORAGE_KEYS = {
   schedule: 'wgre.today.schedule',
   tasks: 'wgre.today.tasks',
+  activeTaskCategory: 'wgre.today.activeTaskCategory',
   pipeline: 'wgre.pipeline',
   metric: 'wgre.metric',
   notes: 'wgre.notes',
 };
 
 const STAGES = ['New', 'Active', 'Under Contract', 'Closed'];
+
+/* Task list categories — edit this array to rename or reorder tabs.
+   Each category always holds exactly TASKS_PER_CATEGORY slots. */
+const TASK_CATEGORIES = ['WGRE', 'LLUV', 'Mission', 'Personal', 'MISC'];
+const TASKS_PER_CATEGORY = 10;
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -52,6 +58,61 @@ function flashSaved() {
   }, 500);
 }
 
+/* ---------- Tasks: load + migrate ---------- */
+function emptyTaskSlots() {
+  const slots = [];
+  for (let i = 0; i < TASKS_PER_CATEGORY; i++) {
+    slots.push({ id: uid(), text: '', done: false });
+  }
+  return slots;
+}
+
+function loadTasksByCategory() {
+  const raw = load(STORAGE_KEYS.tasks, null);
+
+  // Brand new install: empty slots for every category.
+  if (!raw) {
+    const fresh = {};
+    TASK_CATEGORIES.forEach(cat => { fresh[cat] = emptyTaskSlots(); });
+    return fresh;
+  }
+
+  // Old format was a flat array of (originally 3) tasks with no
+  // categories. Migrate that into the first category (WGRE) so nothing
+  // typed before this update gets lost, and pad/trim to 10 slots.
+  if (Array.isArray(raw)) {
+    const migrated = {};
+    TASK_CATEGORIES.forEach(cat => { migrated[cat] = emptyTaskSlots(); });
+    const old = raw.slice(0, TASKS_PER_CATEGORY);
+    old.forEach((task, i) => {
+      migrated[TASK_CATEGORIES[0]][i] = {
+        id: task.id || uid(),
+        text: task.text || '',
+        done: !!task.done,
+      };
+    });
+    return migrated;
+  }
+
+  // Already in the new per-category format — just make sure every
+  // current category exists and has exactly TASKS_PER_CATEGORY slots
+  // (handles someone editing TASK_CATEGORIES later).
+  const result = {};
+  TASK_CATEGORIES.forEach(cat => {
+    const existing = Array.isArray(raw[cat]) ? raw[cat] : [];
+    const slots = existing.slice(0, TASKS_PER_CATEGORY).map(t => ({
+      id: t.id || uid(),
+      text: t.text || '',
+      done: !!t.done,
+    }));
+    while (slots.length < TASKS_PER_CATEGORY) {
+      slots.push({ id: uid(), text: '', done: false });
+    }
+    result[cat] = slots;
+  });
+  return result;
+}
+
 /* ===========================================================
    State
    =========================================================== */
@@ -60,11 +121,7 @@ let state = {
     { id: uid(), time: '8:00 AM', text: 'Lead gen block' },
     { id: uid(), time: '1:00 PM', text: 'Listing appointment' },
   ]),
-  tasks: load(STORAGE_KEYS.tasks, [
-    { id: uid(), text: '', done: false },
-    { id: uid(), text: '', done: false },
-    { id: uid(), text: '', done: false },
-  ]),
+  tasks: loadTasksByCategory(),
   pipeline: load(STORAGE_KEYS.pipeline, [
     { id: uid(), name: 'Sample Client', stage: 'New', notes: 'Edit or delete this row' },
   ]),
@@ -73,6 +130,11 @@ let state = {
 };
 
 let activeStageFilter = 'All';
+
+let activeTaskCategory = load(STORAGE_KEYS.activeTaskCategory, TASK_CATEGORIES[0]);
+if (!TASK_CATEGORIES.includes(activeTaskCategory)) {
+  activeTaskCategory = TASK_CATEGORIES[0];
+}
 
 /* ===========================================================
    Header: greeting + date
@@ -128,18 +190,37 @@ document.getElementById('addScheduleBtn').addEventListener('click', () => {
 });
 
 /* ===========================================================
-   Top 3 Tasks
+   Tasks (tabbed lists, 10 slots per category)
    =========================================================== */
+function renderTaskTabs() {
+  const tabs = document.getElementById('taskTabs');
+  tabs.innerHTML = '';
+  TASK_CATEGORIES.forEach(cat => {
+    const btn = document.createElement('button');
+    btn.className = 'task-tab' + (cat === activeTaskCategory ? ' active' : '');
+    btn.textContent = cat;
+    btn.addEventListener('click', () => {
+      activeTaskCategory = cat;
+      save(STORAGE_KEYS.activeTaskCategory, activeTaskCategory);
+      renderTaskTabs();
+      renderTasks();
+    });
+    tabs.appendChild(btn);
+  });
+}
+
 function renderTasks() {
   const list = document.getElementById('taskList');
   list.innerHTML = '';
-  state.tasks.forEach((task, i) => {
+  const tasks = state.tasks[activeTaskCategory];
+
+  tasks.forEach((task, i) => {
     const li = document.createElement('li');
     li.className = 'task-row' + (task.done ? ' done' : '');
     li.innerHTML = `
       <span class="task-num">${i + 1}</span>
       <input type="checkbox" class="task-check" ${task.done ? 'checked' : ''} />
-      <input class="task-text" value="${escapeAttr(task.text)}" placeholder="Priority ${i + 1}..." />
+      <input class="task-text" value="${escapeAttr(task.text)}" placeholder="Task ${i + 1}..." />
     `;
     const checkbox = li.querySelector('.task-check');
     const textInput = li.querySelector('.task-text');
@@ -338,6 +419,7 @@ function escapeAttr(str) {
    =========================================================== */
 renderHeader();
 renderSchedule();
+renderTaskTabs();
 renderTasks();
 renderMetric();
 renderPipeline();
