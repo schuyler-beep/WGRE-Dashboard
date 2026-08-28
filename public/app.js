@@ -9,7 +9,6 @@ const STORAGE_KEYS = {
   tasks: 'wgre.today.tasks',
   activeTaskCategory: 'wgre.today.activeTaskCategory',
   pipeline: 'wgre.pipeline',
-  metric: 'wgre.metric',
   notes: 'wgre.notes',
 };
 
@@ -125,7 +124,6 @@ let state = {
   pipeline: load(STORAGE_KEYS.pipeline, [
     { id: uid(), name: 'Sample Client', stage: 'New', notes: 'Edit or delete this row' },
   ]),
-  metric: load(STORAGE_KEYS.metric, { label: 'Deals This Month', value: 0 }),
   notes: load(STORAGE_KEYS.notes, ''),
 };
 
@@ -238,47 +236,6 @@ function renderTasks() {
 }
 
 /* ===========================================================
-   My Number (metric)
-   =========================================================== */
-function renderMetric() {
-  document.getElementById('metricLabel').value = state.metric.label;
-  document.getElementById('metricValue').textContent = state.metric.value;
-
-  const ticksEl = document.getElementById('metricTicks');
-  ticksEl.innerHTML = '';
-  const tickCount = Math.min(state.metric.value, 40);
-  for (let i = 0; i < tickCount; i++) {
-    const t = document.createElement('span');
-    t.className = 'tick';
-    ticksEl.appendChild(t);
-  }
-}
-
-document.getElementById('metricLabel').addEventListener('input', (e) => {
-  state.metric.label = e.target.value;
-  save(STORAGE_KEYS.metric, state.metric);
-});
-
-document.getElementById('metricPlus').addEventListener('click', () => {
-  state.metric.value += 1;
-  save(STORAGE_KEYS.metric, state.metric);
-  renderMetric();
-});
-
-document.getElementById('metricMinus').addEventListener('click', () => {
-  state.metric.value = Math.max(0, state.metric.value - 1);
-  save(STORAGE_KEYS.metric, state.metric);
-  renderMetric();
-});
-
-document.getElementById('metricReset').addEventListener('click', () => {
-  if (!confirm('Reset "' + state.metric.label + '" back to zero?')) return;
-  state.metric.value = 0;
-  save(STORAGE_KEYS.metric, state.metric);
-  renderMetric();
-});
-
-/* ===========================================================
    Pipeline
    =========================================================== */
 function stageClass(stage) {
@@ -300,7 +257,13 @@ function renderPipeline() {
 
   rows.forEach(client => {
     const tr = document.createElement('tr');
+    tr.dataset.clientId = client.id;
     tr.innerHTML = `
+      <td class="drag-handle" title="Drag to reorder">
+        <div class="drag-handle-grip">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </td>
       <td><input class="client-name-input" value="${escapeAttr(client.name)}" placeholder="Client name" /></td>
       <td>
         <select class="stage-select ${stageClass(client.stage)}">
@@ -335,9 +298,77 @@ function renderPipeline() {
       save(STORAGE_KEYS.pipeline, state.pipeline);
       renderPipeline();
     });
+    tr.querySelector('.drag-handle').addEventListener('pointerdown', (e) => {
+      startRowDrag(e, tr, body);
+    });
 
     body.appendChild(tr);
   });
+}
+
+/* ---------- Drag-to-reorder pipeline rows ---------- */
+function startRowDrag(pointerDownEvent, tr, tbody) {
+  pointerDownEvent.preventDefault();
+  const pointerId = pointerDownEvent.pointerId;
+
+  tr.classList.add('dragging');
+  document.body.classList.add('reordering-row');
+  try { tr.setPointerCapture(pointerId); } catch (e) { /* ignore */ }
+
+  function onMove(e) {
+    const targetRow = document
+      .elementFromPoint(e.clientX, e.clientY)
+      ?.closest('tr');
+
+    if (!targetRow || targetRow === tr || targetRow.parentElement !== tbody) return;
+
+    const targetRect = targetRow.getBoundingClientRect();
+    const pointerIsAboveMidpoint = e.clientY < targetRect.top + targetRect.height / 2;
+
+    if (pointerIsAboveMidpoint) {
+      tbody.insertBefore(tr, targetRow);
+    } else {
+      tbody.insertBefore(tr, targetRow.nextSibling);
+    }
+  }
+
+  function onUp(e) {
+    tr.classList.remove('dragging');
+    document.body.classList.remove('reordering-row');
+    try { tr.releasePointerCapture(pointerId); } catch (err) { /* ignore */ }
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    commitPipelineOrderFromDOM(tbody);
+  }
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+}
+
+// Reads the current (possibly filtered) row order out of the DOM after a
+// drag, then writes that new order back into the full state.pipeline
+// array — clients hidden by the active stage filter keep their relative
+// position untouched.
+function commitPipelineOrderFromDOM(tbody) {
+  const newOrderIds = Array.from(tbody.children).map(tr => tr.dataset.clientId);
+
+  const visiblePositions = [];
+  state.pipeline.forEach((c, idx) => {
+    if (activeStageFilter === 'All' || c.stage === activeStageFilter) visiblePositions.push(idx);
+  });
+
+  const byId = {};
+  state.pipeline.forEach(c => { byId[c.id] = c; });
+
+  const reordered = state.pipeline.slice();
+  visiblePositions.forEach((pos, i) => {
+    reordered[pos] = byId[newOrderIds[i]];
+  });
+
+  state.pipeline = reordered;
+  save(STORAGE_KEYS.pipeline, state.pipeline);
 }
 
 document.getElementById('addClientBtn').addEventListener('click', () => {
@@ -387,7 +418,7 @@ document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(btn => {
 });
 
 /* Keep nav highlight in sync while scrolling */
-const sections = ['panel-today', 'panel-metric', 'panel-pipeline', 'panel-notes']
+const sections = ['panel-today', 'panel-pipeline', 'panel-notes']
   .map(id => document.getElementById(id))
   .filter(Boolean);
 
@@ -421,5 +452,4 @@ renderHeader();
 renderSchedule();
 renderTaskTabs();
 renderTasks();
-renderMetric();
 renderPipeline();
