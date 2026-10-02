@@ -21,6 +21,7 @@
   --ink-muted: #5B6472;
   --ink-faint: #8A93A3;
 
+  --stage-lead: #C0392B;
   --stage-new: #5B7BA6;
   --stage-active: #C9A227;
   --stage-contract: #C2740B;
@@ -606,6 +607,7 @@ body.reordering-row * {
   background-repeat: no-repeat;
 }
 
+.stage-select.stage-Lead { background-color: var(--stage-lead); }
 .stage-select.stage-New { background-color: var(--stage-new); }
 .stage-select.stage-Active { background-color: var(--stage-active); color: var(--navy-950); }
 .stage-select.stage-Under_Contract { background-color: var(--stage-contract); }
