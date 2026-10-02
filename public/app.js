@@ -1,37 +1,480 @@
-import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
+/* ===========================================================
+   WGRE Command Dashboard
+   Plain JS, no build step. All data saved to this browser's
+   localStorage, so it persists on refresh (per device).
+   =========================================================== */
 
-/* ======================================================================
- * GUEST LIST — edit this and only this to control who can sign in.
- * Add or remove email addresses below. Use the exact Google account
- * email address for each person. Lowercase doesn't matter — everything
- * is compared in lowercase automatically.
- * ==================================================================== */
-export const ALLOWED_EMAILS = [
-  "schuyler@wgrouprealestate.com",
-];
-/* ==================================================================== */
+const STORAGE_KEYS = {
+  schedule: 'wgre.today.schedule',
+  tasks: 'wgre.today.tasks',
+  activeTaskCategory: 'wgre.today.activeTaskCategory',
+  pipeline: 'wgre.pipeline',
+  notes: 'wgre.notes',
+};
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [Google],
+const STAGES = ['New', 'Active', 'Under Contract', 'Closed'];
 
-  // JWT sessions: no database required. The session is stored in an
-  // encrypted cookie, signed with AUTH_SECRET.
-  session: { strategy: "jwt" },
+/* Task list categories — edit this array to rename or reorder tabs.
+   Each category always holds exactly TASKS_PER_CATEGORY slots. */
+const TASK_CATEGORIES = ['WGRE', 'LLUV', 'Mission', 'Personal', 'MISC'];
+const TASKS_PER_CATEGORY = 10;
 
-  pages: {
-    signIn: "/signin",
-    error: "/access-denied",
-  },
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
 
-  callbacks: {
-    // Runs on the server every time someone finishes signing in with
-    // Google, before a session is ever created. Returning false rejects
-    // the sign-in entirely and next-auth redirects to the `error` page
-    // above (/access-denied) — no session/cookie is issued.
-    async signIn({ user }) {
-      const email = (user?.email || "").toLowerCase();
-      return ALLOWED_EMAILS.includes(email);
-    },
-  },
+function load(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function save(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    flashSaved();
+  } catch (e) {
+    console.error('Could not save', key, e);
+  }
+}
+
+/* ---------- Save indicator ---------- */
+let saveTimeout;
+function flashSaved() {
+  const dot = document.getElementById('saveDot');
+  const text = document.getElementById('saveText');
+  if (!dot || !text) return;
+  dot.style.opacity = '1';
+  text.textContent = 'Saving…';
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    text.textContent = 'All changes saved on this device';
+    dot.style.opacity = '0.4';
+  }, 500);
+}
+
+/* ---------- Tasks: load + migrate ---------- */
+function emptyTaskSlots() {
+  const slots = [];
+  for (let i = 0; i < TASKS_PER_CATEGORY; i++) {
+    slots.push({ id: uid(), text: '', done: false });
+  }
+  return slots;
+}
+
+function loadTasksByCategory() {
+  const raw = load(STORAGE_KEYS.tasks, null);
+
+  // Brand new install: empty slots for every category.
+  if (!raw) {
+    const fresh = {};
+    TASK_CATEGORIES.forEach(cat => { fresh[cat] = emptyTaskSlots(); });
+    return fresh;
+  }
+
+  // Old format was a flat array of (originally 3) tasks with no
+  // categories. Migrate that into the first category (WGRE) so nothing
+  // typed before this update gets lost, and pad/trim to 10 slots.
+  if (Array.isArray(raw)) {
+    const migrated = {};
+    TASK_CATEGORIES.forEach(cat => { migrated[cat] = emptyTaskSlots(); });
+    const old = raw.slice(0, TASKS_PER_CATEGORY);
+    old.forEach((task, i) => {
+      migrated[TASK_CATEGORIES[0]][i] = {
+        id: task.id || uid(),
+        text: task.text || '',
+        done: !!task.done,
+      };
+    });
+    return migrated;
+  }
+
+  // Already in the new per-category format — just make sure every
+  // current category exists and has exactly TASKS_PER_CATEGORY slots
+  // (handles someone editing TASK_CATEGORIES later).
+  const result = {};
+  TASK_CATEGORIES.forEach(cat => {
+    const existing = Array.isArray(raw[cat]) ? raw[cat] : [];
+    const slots = existing.slice(0, TASKS_PER_CATEGORY).map(t => ({
+      id: t.id || uid(),
+      text: t.text || '',
+      done: !!t.done,
+    }));
+    while (slots.length < TASKS_PER_CATEGORY) {
+      slots.push({ id: uid(), text: '', done: false });
+    }
+    result[cat] = slots;
+  });
+  return result;
+}
+
+/* ===========================================================
+   State
+   =========================================================== */
+let state = {
+  schedule: load(STORAGE_KEYS.schedule, [
+    { id: uid(), time: '8:00 AM', text: 'Lead gen block' },
+    { id: uid(), time: '1:00 PM', text: 'Listing appointment' },
+  ]),
+  tasks: loadTasksByCategory(),
+  pipeline: load(STORAGE_KEYS.pipeline, [
+    { id: uid(), name: 'Sample Client', stage: 'New', notes: 'Edit or delete this row' },
+  ]),
+  notes: load(STORAGE_KEYS.notes, ''),
+};
+
+let activeStageFilter = 'All';
+
+let activeTaskCategory = load(STORAGE_KEYS.activeTaskCategory, TASK_CATEGORIES[0]);
+if (!TASK_CATEGORIES.includes(activeTaskCategory)) {
+  activeTaskCategory = TASK_CATEGORIES[0];
+}
+
+/* ===========================================================
+   Header: greeting + date
+   =========================================================== */
+function renderHeader() {
+  const now = new Date();
+  const hour = now.getHours();
+  const greetingWord = hour < 12 ? 'Morning' : hour < 17 ? 'Afternoon' : 'Evening';
+  document.getElementById('greeting').textContent = `${greetingWord} Operating Picture`;
+  document.getElementById('todayDate').textContent = now.toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  });
+}
+
+/* ===========================================================
+   Schedule
+   =========================================================== */
+function renderSchedule() {
+  const list = document.getElementById('scheduleList');
+  list.innerHTML = '';
+  state.schedule.forEach(item => {
+    const li = document.createElement('li');
+    li.className = 'schedule-row';
+    li.innerHTML = `
+      <input class="schedule-time" value="${escapeAttr(item.time)}" placeholder="Time" />
+      <input class="schedule-text" value="${escapeAttr(item.text)}" placeholder="What's happening" />
+      <button class="icon-btn" title="Remove">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+      </button>
+    `;
+    const [timeInput, textInput] = li.querySelectorAll('input');
+    timeInput.addEventListener('input', () => {
+      item.time = timeInput.value;
+      save(STORAGE_KEYS.schedule, state.schedule);
+    });
+    textInput.addEventListener('input', () => {
+      item.text = textInput.value;
+      save(STORAGE_KEYS.schedule, state.schedule);
+    });
+    li.querySelector('.icon-btn').addEventListener('click', () => {
+      state.schedule = state.schedule.filter(s => s.id !== item.id);
+      save(STORAGE_KEYS.schedule, state.schedule);
+      renderSchedule();
+    });
+    list.appendChild(li);
+  });
+}
+
+document.getElementById('addScheduleBtn').addEventListener('click', () => {
+  state.schedule.push({ id: uid(), time: '', text: '' });
+  save(STORAGE_KEYS.schedule, state.schedule);
+  renderSchedule();
 });
+
+/* ===========================================================
+   Tasks (tabbed lists, 10 slots per category)
+   =========================================================== */
+function renderTaskTabs() {
+  const tabs = document.getElementById('taskTabs');
+  tabs.innerHTML = '';
+  TASK_CATEGORIES.forEach(cat => {
+    const btn = document.createElement('button');
+    btn.className = 'task-tab' + (cat === activeTaskCategory ? ' active' : '');
+    btn.textContent = cat;
+    btn.addEventListener('click', () => {
+      activeTaskCategory = cat;
+      save(STORAGE_KEYS.activeTaskCategory, activeTaskCategory);
+      renderTaskTabs();
+      renderTasks();
+    });
+    tabs.appendChild(btn);
+  });
+}
+
+function renderTasks() {
+  const list = document.getElementById('taskList');
+  list.innerHTML = '';
+  const tasks = state.tasks[activeTaskCategory];
+
+  tasks.forEach((task, i) => {
+    const li = document.createElement('li');
+    li.className = 'task-row' + (task.done ? ' done' : '');
+    li.dataset.taskId = task.id;
+    li.setAttribute('data-drag-row', '');
+    li.innerHTML = `
+      <div class="task-drag-handle" title="Drag to reorder">
+        <div class="drag-handle-grip">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+      <input type="checkbox" class="task-check" ${task.done ? 'checked' : ''} />
+      <input class="task-text" value="${escapeAttr(task.text)}" placeholder="Task ${i + 1}..." />
+    `;
+    const checkbox = li.querySelector('.task-check');
+    const textInput = li.querySelector('.task-text');
+    checkbox.addEventListener('change', () => {
+      task.done = checkbox.checked;
+      save(STORAGE_KEYS.tasks, state.tasks);
+      renderTasks();
+    });
+    textInput.addEventListener('input', () => {
+      task.text = textInput.value;
+      save(STORAGE_KEYS.tasks, state.tasks);
+    });
+    li.querySelector('.task-drag-handle').addEventListener('pointerdown', (e) => {
+      startRowDrag(e, li, list, commitTaskOrderFromDOM);
+    });
+    list.appendChild(li);
+  });
+}
+
+// Reads the current task order out of the DOM after a drag (within the
+// active tab's own 10 slots) and writes it back into that category's
+// array in state.tasks.
+function commitTaskOrderFromDOM(list) {
+  const newOrderIds = Array.from(list.children).map(li => li.dataset.taskId);
+  const byId = {};
+  state.tasks[activeTaskCategory].forEach(t => { byId[t.id] = t; });
+  state.tasks[activeTaskCategory] = newOrderIds.map(id => byId[id]);
+  save(STORAGE_KEYS.tasks, state.tasks);
+}
+
+/* ===========================================================
+   Pipeline
+   =========================================================== */
+function stageClass(stage) {
+  return 'stage-' + stage.replace(/ /g, '_');
+}
+
+function renderPipeline() {
+  const body = document.getElementById('pipelineBody');
+  const emptyEl = document.getElementById('pipelineEmpty');
+  body.innerHTML = '';
+
+  const rows = state.pipeline.filter(c => activeStageFilter === 'All' || c.stage === activeStageFilter);
+
+  if (rows.length === 0) {
+    emptyEl.style.display = 'block';
+  } else {
+    emptyEl.style.display = 'none';
+  }
+
+  rows.forEach(client => {
+    const tr = document.createElement('tr');
+    tr.dataset.clientId = client.id;
+    tr.setAttribute('data-drag-row', '');
+    tr.innerHTML = `
+      <td class="drag-handle" title="Drag to reorder">
+        <div class="drag-handle-grip">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </td>
+      <td><input class="client-name-input" value="${escapeAttr(client.name)}" placeholder="Client name" /></td>
+      <td>
+        <select class="stage-select ${stageClass(client.stage)}">
+          ${STAGES.map(s => `<option value="${s}" ${s === client.stage ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="client-notes-input" value="${escapeAttr(client.notes)}" placeholder="Notes..." /></td>
+      <td>
+        <button class="icon-btn" title="Remove client">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        </button>
+      </td>
+    `;
+
+    tr.querySelector('.client-name-input').addEventListener('input', (e) => {
+      client.name = e.target.value;
+      save(STORAGE_KEYS.pipeline, state.pipeline);
+    });
+    tr.querySelector('.client-notes-input').addEventListener('input', (e) => {
+      client.notes = e.target.value;
+      save(STORAGE_KEYS.pipeline, state.pipeline);
+    });
+    const select = tr.querySelector('.stage-select');
+    select.addEventListener('change', (e) => {
+      client.stage = e.target.value;
+      select.className = 'stage-select ' + stageClass(client.stage);
+      save(STORAGE_KEYS.pipeline, state.pipeline);
+      renderPipeline();
+    });
+    tr.querySelector('.icon-btn').addEventListener('click', () => {
+      state.pipeline = state.pipeline.filter(c => c.id !== client.id);
+      save(STORAGE_KEYS.pipeline, state.pipeline);
+      renderPipeline();
+    });
+    tr.querySelector('.drag-handle').addEventListener('pointerdown', (e) => {
+      startRowDrag(e, tr, body, commitPipelineOrderFromDOM);
+    });
+
+    body.appendChild(tr);
+  });
+}
+
+/* ---------- Drag-to-reorder (shared by Pipeline rows and Task rows) ----------
+   rowEl: the <tr> or <li> being dragged (must carry a [data-drag-row] attribute)
+   containerEl: its parent (<tbody> or <ul>)
+   onDrop(containerEl): called once, after the pointer is released, so the
+   caller can read the new DOM order and write it back into state. */
+function startRowDrag(pointerDownEvent, rowEl, containerEl, onDrop) {
+  pointerDownEvent.preventDefault();
+  const pointerId = pointerDownEvent.pointerId;
+
+  rowEl.classList.add('dragging');
+  document.body.classList.add('reordering-row');
+  try { rowEl.setPointerCapture(pointerId); } catch (e) { /* ignore */ }
+
+  function onMove(e) {
+    const targetRow = document
+      .elementFromPoint(e.clientX, e.clientY)
+      ?.closest('[data-drag-row]');
+
+    if (!targetRow || targetRow === rowEl || targetRow.parentElement !== containerEl) return;
+
+    const targetRect = targetRow.getBoundingClientRect();
+    const pointerIsAboveMidpoint = e.clientY < targetRect.top + targetRect.height / 2;
+
+    if (pointerIsAboveMidpoint) {
+      containerEl.insertBefore(rowEl, targetRow);
+    } else {
+      containerEl.insertBefore(rowEl, targetRow.nextSibling);
+    }
+  }
+
+  function onUp() {
+    rowEl.classList.remove('dragging');
+    document.body.classList.remove('reordering-row');
+    try { rowEl.releasePointerCapture(pointerId); } catch (err) { /* ignore */ }
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    onDrop(containerEl);
+  }
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+}
+
+// Reads the current (possibly filtered) row order out of the DOM after a
+// drag, then writes that new order back into the full state.pipeline
+// array — clients hidden by the active stage filter keep their relative
+// position untouched.
+function commitPipelineOrderFromDOM(tbody) {
+  const newOrderIds = Array.from(tbody.children).map(tr => tr.dataset.clientId);
+
+  const visiblePositions = [];
+  state.pipeline.forEach((c, idx) => {
+    if (activeStageFilter === 'All' || c.stage === activeStageFilter) visiblePositions.push(idx);
+  });
+
+  const byId = {};
+  state.pipeline.forEach(c => { byId[c.id] = c; });
+
+  const reordered = state.pipeline.slice();
+  visiblePositions.forEach((pos, i) => {
+    reordered[pos] = byId[newOrderIds[i]];
+  });
+
+  state.pipeline = reordered;
+  save(STORAGE_KEYS.pipeline, state.pipeline);
+}
+
+document.getElementById('addClientBtn').addEventListener('click', () => {
+  state.pipeline.unshift({ id: uid(), name: '', stage: 'New', notes: '' });
+  save(STORAGE_KEYS.pipeline, state.pipeline);
+  renderPipeline();
+});
+
+document.getElementById('stageTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.stage-tab');
+  if (!btn) return;
+  activeStageFilter = btn.dataset.stage;
+  document.querySelectorAll('.stage-tab').forEach(b => b.classList.toggle('active', b === btn));
+  renderPipeline();
+});
+
+/* ===========================================================
+   Notes
+   =========================================================== */
+const notesArea = document.getElementById('notesArea');
+notesArea.value = state.notes;
+let notesDebounce;
+notesArea.addEventListener('input', () => {
+  document.getElementById('notesStatus').textContent = 'Saving…';
+  clearTimeout(notesDebounce);
+  notesDebounce = setTimeout(() => {
+    state.notes = notesArea.value;
+    save(STORAGE_KEYS.notes, state.notes);
+    document.getElementById('notesStatus').textContent = 'Saved';
+  }, 400);
+});
+
+/* ===========================================================
+   Navigation (desktop sidebar + mobile top bar)
+   =========================================================== */
+function goToPanel(targetId) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(b => {
+    b.classList.toggle('active', b.dataset.target === targetId);
+  });
+}
+
+document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(btn => {
+  btn.addEventListener('click', () => goToPanel(btn.dataset.target));
+});
+
+/* Keep nav highlight in sync while scrolling */
+const sections = ['panel-today', 'panel-pipeline', 'panel-notes']
+  .map(id => document.getElementById(id))
+  .filter(Boolean);
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(b => {
+        b.classList.toggle('active', b.dataset.target === entry.target.id);
+      });
+    }
+  });
+}, { rootMargin: '-40% 0px -50% 0px' });
+
+sections.forEach(s => observer.observe(s));
+
+/* ===========================================================
+   Utility
+   =========================================================== */
+function escapeAttr(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/* ===========================================================
+   Init
+   =========================================================== */
+renderHeader();
+renderSchedule();
+renderTaskTabs();
+renderTasks();
+renderPipeline();
