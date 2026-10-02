@@ -12,7 +12,7 @@ const STORAGE_KEYS = {
   notes: 'wgre.notes',
 };
 
-const STAGES = ['New', 'Active', 'Under Contract', 'Closed'];
+const STAGES = ['Lead', 'New', 'Active', 'Under Contract', 'Closed'];
 
 /* Task list categories — edit this array to rename or reorder tabs.
    Each category always holds exactly TASKS_PER_CATEGORY slots. */
@@ -397,7 +397,7 @@ function commitPipelineOrderFromDOM(tbody) {
 }
 
 document.getElementById('addClientBtn').addEventListener('click', () => {
-  state.pipeline.unshift({ id: uid(), name: '', stage: 'New', notes: '' });
+  state.pipeline.unshift({ id: uid(), name: '', stage: 'Lead', notes: '' });
   save(STORAGE_KEYS.pipeline, state.pipeline);
   renderPipeline();
 });
