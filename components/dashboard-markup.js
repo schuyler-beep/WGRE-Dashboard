@@ -84,6 +84,7 @@ export const DASHBOARD_HTML = `
           <h2><span class="panel-eyebrow">02</span>&nbsp; Pipeline</h2>
           <div class="stage-tabs" id="stageTabs">
             <button class="stage-tab active" data-stage="All">All</button>
+            <button class="stage-tab" data-stage="Lead">Lead</button>
             <button class="stage-tab" data-stage="New">New</button>
             <button class="stage-tab" data-stage="Active">Active</button>
             <button class="stage-tab" data-stage="Under Contract">Under Contract</button>
