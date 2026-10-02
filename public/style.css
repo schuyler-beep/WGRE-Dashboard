@@ -423,14 +423,24 @@ button, input, textarea, select {
   opacity: 0.6;
 }
 
-.task-num {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--gold-600);
-  font-weight: 700;
-  width: 18px;
-  flex-shrink: 0;
+.task-row.dragging {
+  position: relative;
+  z-index: 5;
+  background: var(--gold-100);
+  box-shadow: 0 6px 16px rgba(11, 31, 58, 0.18);
 }
+
+.task-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.task-row.dragging .task-drag-handle { cursor: grabbing; }
 
 .task-check {
   width: 17px; height: 17px;
